@@ -1,6 +1,9 @@
 const express = require("express");
+const multer = require("multer");
+const sharp = require("sharp");
 const User = require("../models/user");
 const auth = require("../middleware/auth");
+const { sendWelcomeEmail, sendCancelationEmail } = require("../emails/account");
 
 const router = new express.Router();
 
@@ -9,6 +12,7 @@ router.post("/users", async (req, res) => {
 
   try {
     await user.save(); // eitherway its working even its not here due to there is save in generateToken???
+    sendWelcomeEmail(user.email, user.name);
     const token = await user.generateAuthToken();
     res.status(201).send({ user: user, token: token });
     // res.status(201).send(user);
@@ -59,35 +63,13 @@ router.post("/users/logoutAll", auth, async (req, res) => {
   }
 });
 
-// router.get("/users", auth, async (req, res) => {
-//   try {
-//     const users = await User.find({});
-//     res.send(users);
-//   } catch (error) {
-//     res.status(500).send();
-//   }
-// });
-
 router.get("/users/me", auth, async (req, res) => {
   res.send(req.user);
 });
 
-router.get("/users/:id", async (req, res) => {
-  //to get the :id
-  const _id = req.params.id;
-  try {
-    const user = await User.findById(_id);
-    if (!user) {
-      return res.status(404).send();
-    }
-    res.send(user);
-  } catch (error) {
-    res.status(500).send();
-  }
-});
-
-router.patch("/users/:id", async (req, res) => {
-  const _id = req.params.id;
+router.patch("/users/me", auth, async (req, res) => {
+  // get the user on req.user from auth
+  const user = req.user;
   const updates = req.body;
   const updatesProperty = Object.keys(req.body);
   const allowedUpdates = ["name", "email", "password", "age"];
@@ -100,23 +82,11 @@ router.patch("/users/:id", async (req, res) => {
   }
 
   try {
-    const user = await User.findById(_id);
-
     updatesProperty.forEach((updateProperty) => {
       user[updateProperty] = updates[updateProperty];
     });
 
     await user.save();
-
-    // const user = await User.findByIdAndUpdate(_id, updates, {
-    //   // return the modifed document rather than the original
-    //   new: true,
-    //   // run update validators
-    //   runValidators: true,
-    // });
-    if (!user) {
-      return res.status(404).send();
-    }
 
     res.send(user);
   } catch (error) {
@@ -124,16 +94,69 @@ router.patch("/users/:id", async (req, res) => {
   }
 });
 
-router.delete("/users/:id", async (req, res) => {
-  const _id = req.params.id;
+router.delete("/users/me", auth, async (req, res) => {
+  const _id = req.user._id; //get it on the auth middleware
   try {
-    const user = await User.findByIdAndDelete(_id);
-    if (!user) {
-      return res.status(404).send();
-    }
-    res.send(user);
+    await req.user.remove(_id);
+    sendCancelationEmail(req.user.email, req.user.name);
+    res.send(req.user);
   } catch (error) {
     res.status(500).send();
+  }
+});
+
+const upload = multer({
+  // dest: "avatars",
+  limits: {
+    fileSize: 1000000,
+  },
+  fileFilter(req, file, cb) {
+    if (!file.originalname.match(/\.(jpg|jpeg|png)$/)) {
+      // when fail (1st arg)
+      return cb(new Error("Please upload an image"));
+    }
+
+    // when sucess (1st arg, 2nd arg)
+    cb(undefined, true);
+  },
+});
+
+router.post(
+  "/users/me/avatar",
+  auth,
+  upload.single("avatar"),
+  async (req, res) => {
+    const buffer = await sharp(req.file.buffer)
+      .resize({ width: 250, height: 250 })
+      .png()
+      .toBuffer();
+    req.user.avatar = buffer;
+    await req.user.save();
+    res.send();
+  },
+  (error, req, res, next) => {
+    res.status(400).send({ error: error.message });
+  }
+);
+
+router.delete("/users/me/avatar", auth, async (req, res) => {
+  req.user.avatar = undefined;
+  await req.user.save();
+  res.send();
+});
+
+router.get("/users/:id/avatar", async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+
+    if (!user || !user.avatar) {
+      throw new Error();
+    }
+
+    res.set("Content-Type", "image/png");
+    res.send(user.avatar);
+  } catch (error) {
+    res.status(404).send();
   }
 });
 
